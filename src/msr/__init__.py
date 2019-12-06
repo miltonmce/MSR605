@@ -1,4 +1,5 @@
-
+from .msrexception import MSRException
+import serial
 
 class Commands(object):
     """
@@ -238,3 +239,109 @@ class Commands(object):
         Description:This command is to get MSR605 write status.
         """
         return self.ESC+'\x64'
+
+
+class MSR(serial.Serial):
+
+    def __init__(self,dev ,test=True,timeout=10):
+        """
+        Por defecto se le da una cohecion baja ya que son tarjetas para hoteles no deben de tener larga duracion de grabado
+
+        :param dev:
+        :param test:
+        :param timeout:
+        """
+        super(MSR, self).__init__(dev, 9600, 8, serial.PARITY_NONE, timeout=timeout)
+        self.comando = Commands()
+        self.excep = MSRException
+        self.estado = ""
+        self.tracks = {
+            '1': self.comando.ESC + '\x01',
+            '2': self.comando.ESC + '\x02',
+            '3': self.comando.ESC + '\x03',
+            '12': b'00000011',
+            '13': b'00000101',
+            '23': b'00000110',
+            '123': b'00000111',
+        }
+        self._send_command(self.comando.reset())
+        self._send_command(self.comando.set_low_co())
+        if test:
+            self._send_command(self.comando.communication_test())
+
+    def leer(self):
+        """
+        Lee la tarjeta 1 track a la ves y regresa el valor de cada uno de los espacios por separado en caso
+        de que el dispositivo envie un error regresa un mensaje
+        :return:
+        """
+
+        self._send_command(self.comando.read_iso())
+        track1 = self._read_until(self.tracks.get('1'))[:-2]
+        track2 = self._read_until(self.tracks.get('2'))[:-2]
+        track3 = self._read_until('\x1C')[:-1]
+        _, status = self.read(2)
+        if status == '\x31':
+            return "error de lectura"
+
+        return track1, track2, track3
+
+    def escribir_tracks(self, t1="", t2="", t3=""):
+        """
+        Metodo para escribir en nuestra tarjeta magnetica si se requiere dejar un track vacio poner un
+        string en blanco o doble comilla
+        ademas nada mas acepta letras en mayuscula si introduces letras en minuscula apareceran espacios en blanco
+        :param t1:
+        :param t2:
+        :param t3:
+        :return True: Cuando el sistema escribe los datos correctamente en la tarjeta
+        :return False: Cuando el sistema no puede escribir los datos correctamente en la tarjeta
+        """
+        self._send_command(self.comando.set_hi_co())
+        data= "\x1B\x77\x1B\x73\x1B\x01" + t1 + "\x1B\x02" + t2 + "\x1B\x03" + t3 + '\x3F\x1C'
+        self._send_command(data)
+        _,_,_,_,_,_,_,self.estado = self.read(8)
+        if self.estado == '\x30':
+            return True
+        else:
+            return False
+
+
+    def borrar_tracks(self,tracks ):
+        """
+        Metodo que recive un string con el valor del track que quieres borrar a corde a la siguiente informacion
+            track1: 1
+            track2: 2
+            track3: 3
+            track1 y 2: 12
+            track1 y 3: 13
+            track2 y 3: 13
+            track1,2 y 3: 123
+        """
+        self._send_command(self.comando.set_hi_co())
+        self._send_command(self.comando.erase_card(),self.tracks.get(tracks))
+
+    def _send_command(self, command, *args):
+        """
+        Envia los comandos al dispotivo a partir del diccionario comandos
+
+        :param command:
+        :param args:
+        :return:
+        """
+        self.flushInput()
+        self.flushOutput()
+        self.write(command + ''.join(args))
+        self.flush()
+
+    def _read_until(self, end):
+        """
+        Obtiene los datos del dispositivo utilizando los comandos seleccionados y retorna
+        :param end:
+        :return:
+        """
+        data = ''
+        while True:
+            data += self.read(1)
+            if data.endswith(end):
+                return data
